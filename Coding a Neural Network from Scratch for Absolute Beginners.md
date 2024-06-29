@@ -4,13 +4,13 @@ Have you heard of rice milling machine? Well, here is an image of it-
 
 *This article is pretty long. But this is not to waste your time reading. This long writing is actually here for making things more intuitive and speeding up your learning. Also, I will avoid technical terms and math to make things simpler to consume.*
 
-Great! Lets come back to the rice milling machine. So, this machine take in paddies and then does some processing (threshing). At the end, you will get rice and husk as output-
+Great! Let's come back to the rice milling machine. So, this machine take in paddies and then does some processing (threshing). At the end, you will get rice and husk as output-
 
 ![1_2qSuSwsJzLlHL80RUPYr9Q](https://github.com/MinhasKamal/AIBeginnerCode/assets/5456665/66418424-74af-4f4a-8cf7-d857836adb7d)
 
 Neural Networks or any AI model in general are like processing machines that take some data as input, then runs some kind of transformation, and finally output results. For example, if you provide a goat  image to the model, then it will transform the image into the word "goat".
 
-Lets jump into a simple problem: predicting storm. If we have dark clouds and a sudden drop in temperature, then we predict  that a storm is coming. Here is a tabular representation of the data-
+Let's jump into a simple problem: predicting storm. If we have dark clouds and a sudden drop in temperature, then we predict  that a storm is coming. Here is a tabular representation of the data-
 
 ![1_TIl5bNmlQeKeoOkISW72NA](https://github.com/MinhasKamal/AIBeginnerCode/assets/5456665/690942ac-2ad8-400d-8ddb-357ed97be60d)
 
@@ -41,7 +41,7 @@ def predict(dark_clouds, temperature_drop):
     return storm
 ```
 
-Grander the magic sillier  the secret!! The neuron simply puts weights on each input depending on the input's effect on the output. Then, it accumulates all the weighted inputs. If the sum is greater than 1 then we shall output 1, else 0.
+Grander the magic, sillier the secret!! The neuron simply puts weights on each input depending on the input's effect on the output. Then, it accumulates all the weighted inputs. If the sum is greater than 1 then we shall output 1, else 0.
 
 ![1_rLhemTn48RMeJXXfIH3nNQ](https://github.com/MinhasKamal/AIBeginnerCode/assets/5456665/c47f6c66-38bd-47d2-b522-1149018daf1d)
 
@@ -232,12 +232,20 @@ data = [[1, 1, 1],
         [0, 1, 1],
         [0, 0, 1]]
 ```
-
-What is happening? Did your computer crush? Or, not responding? Actually, it is stuck in the while loop. Because, we never get all correct output. The problem happens for the 4th row- [0, 0, 1]. And, its is easy to understand why- the input values are both 0 (zero). So, no matter what the weights are, zero multiplied by any value is zero. Thus, the condition in the predict() function [(dark_clouds*self.w1 + temperature_drop*self.w2) > 1] will never satisfy.
+What is happening? Did your computer crash? Or, not responding? Actually, it is stuck in the while loop. Because, we never get all correct output. The problem happens for the 4th row- [0, 0, 1]. And, it is easy to understand why- the input values are both 0 (zero). So, no matter what the weights are, zero multiplied by any value is zero. Thus, the condition in the predict() function `(dark_clouds*self.w1 + temperature_drop*self.w2) > 1` will never satisfy.
 
 Stop here, do not read the article any further. Think about this issue we are stuck at. What would you do to solve it? Give your brain at least a minute to digest before going further.
 
-Here is the full code-
+That threshold- 1 (one) in the condition is the problem here. Instead of 1, you could put a -1 (negative 1) as the threshold- `(dark_clouds*self.w1 + temperature_drop*self.w2) > -1` . And it will solve the problem. But then, we will have issues with all 0 (zero) output-
+
+```
+data = [[1, 1, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 0]]
+```
+
+So, we need to adjust the threshold accordingly as well. We can set a random value to the threshold and learn it the same way as we learned the weights. Here is the full code-
 
 ```
 import random
@@ -282,9 +290,27 @@ while True:
     runTraining(neuron)
 ```
 
-Now, lets learn some mouthful AI terms. Gradient Descent. Learning Rate. Bias. 
+Wow! It’s been an amazing journey! Welcome to the land of machine learning (ML). Now, let’s get familiar with some mouthful ML terms-
 
-The last test :D Set the values like the following-
+Bias: We simply call threshold t as bias in ML.
+
+Parameters: w1, w2, and t (weights and bias) are called parameters — variables that we learn through training. The act of selecting parameters is called- Parameterization.
+
+Model: After the training, we will have good values of w1, w2, and t (weights and bias) that produce correct outputs. This set of values of the parameters is called a model.
+
+Learning Rate: While adjusting the parameters in the function learn(), we divide the values by 100. You can also think of it as multiplying by 0.01. We call this 0.01 as learning rate; often denoted by alpha (α). Learning rate is a very important hyper-parameter (values set by humans, not learned by training)
+
+Gradient Descent: The algorithm we ran in the learn() function to adjust the parameters (weights and biases) is called gradient descent, or more specifically- Stochastic Gradient Descent (SGD).
+
+Regression: The whole iterative process of predicting, calculating error, and then adjusting the parameters is called regression. The variant we used here is- Linear Regression.
+
+Epochs: Number of loops that were required in regression for reaching the correct outputs.
+
+---
+
+The above code considered only two inputs. But you can easily upgrade it for any number of inputs simply by using arrays. You can find the full code here.
+
+We have one last test for you :D
 
 ```
 data = [[1, 1, 0],
@@ -292,3 +318,6 @@ data = [[1, 1, 0],
         [0, 1, 1],
         [0, 0, 0]]
 ```
+
+We have only one neuron here. And, it has been proved that one neuron can never solve the above problem. We will need multiple neurons (or a neural network) to solve it. [next part is coming soon…]
+
