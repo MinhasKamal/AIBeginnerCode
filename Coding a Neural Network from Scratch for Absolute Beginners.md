@@ -70,7 +70,7 @@ Wait! Where do we get the values of the weights? Well, that is machine learning�
 
 Please, do not just read the article. You will not be able to build a deep intuition just by reading; you need practice. If you have not done it already, open your python editor or GoogleColab and run these codes yourself.
 
-For now, lets set w1=2 and w2=0.5. If you run the code, you will get the following output-
+For now, let's set w1=2 and w2=0.5. If you run the code, you will get the following output-
 ```
 1
 1
@@ -78,7 +78,7 @@ For now, lets set w1=2 and w2=0.5. If you run the code, you will get the followi
 0
 ```
 
-We can see that there is only one mistake here- the 2nd prediction should be 0. Lets set both the weights to 3. So, w1=3 and w2=3. Now, we get this-
+We can see that there is only one mistake here- the 2nd prediction should be 0. Let's set both the weights to 3. So, w1=3 and w2=3. Now, we get this-
 
 ```
 1
@@ -87,7 +87,7 @@ We can see that there is only one mistake here- the 2nd prediction should be 0. 
 0
 ```
 
-Oops! We have two mistakes now- 2nd and 3rd prediction. Lets set w1=0.6 and w2=0.8-
+Oops! We have two mistakes now- 2nd and 3rd prediction. Let's set w1=0.6 and w2=0.8-
 
 ```
 1
@@ -100,7 +100,7 @@ Wow! We have all correct answers now. You can play with different other weight v
 
 By now, we do understand that- simply by changing the weights we can adapt our prediction function for any input-output patterns. Therefore, we need a learning function that takes the two inputs and the output, and does some magic (again)  to change the weights accordingly.
 
-Lets initialize the weights with some random values (The predict function is minimized here under […])-
+Let's initialize the weights with some random values (The predict function is minimized here under […])-
 
 ```
 import random
@@ -171,7 +171,7 @@ As you can see, we are running training as long as we get all correct outputs.
 
 Congratulations on reaching this far! You have successfully coded an artificial neuron from scratch and trained it!! Awesome!!!
 
-Lets make functions for training and testing-
+Let's make functions for training and testing-
 
 ```
 import random
@@ -202,7 +202,7 @@ while True:
 
 If you run the code multiple times, each time you will need different number of steps to reach the solution. This is because of the random values used for initiating the weights. You might even get to solution with only one step. 
 
-Now, lets play with different outputs. Lets change the second output to 1 and run the code multiple times-
+Now, let's play with different outputs. Let's change the second output to 1 and run the code multiple times-
 
 ```
 data = [[1, 1, 1],
@@ -213,7 +213,7 @@ data = [[1, 1, 1],
 
 Is it taking more steps to reach the solution? Why that might be the case? Take sometime, think about it. You can print the weights after each training phase and analyze the gradual change. 
 
-Now, lets set the first output to 0 and run again-
+Now, let's set the first output to 0 and run again-
 
 ```
 data = [[1, 1, 0],
@@ -224,7 +224,7 @@ data = [[1, 1, 0],
 
 Is it taking less steps to reach the solution? Or even more steps? This understanding is very useful to grasp the underlying mechanism of artificial neurons.
 
-Now, lets set all the outputs to 1-
+Now, let's set all the outputs to 1-
 
 ```
 data = [[1, 1, 1],
@@ -321,3 +321,4 @@ data = [[1, 1, 0],
 
 We have only one neuron here. And, it has been proved that one neuron can never solve the above problem. We will need multiple neurons (or a neural network) to solve it. [next part is coming soon…]
 
+[Medium Link](https://medium.com/@minhaskamal/coding-a-neural-network-from-scratch-for-absolute-beginners-1e68bb0461db)
