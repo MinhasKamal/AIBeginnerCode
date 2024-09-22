@@ -2,7 +2,6 @@
 
 ## create conda environment
 
-```
 conda create -n "abc"
 conda activate abc (ctrl+shift+p > select python interpreter > abc > refresh terminal)
 conda env list
@@ -14,5 +13,4 @@ conda install sklearn
 conda install matplotlib
 conda install tqdm
 
-```
 
