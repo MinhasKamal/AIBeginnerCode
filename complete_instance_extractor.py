@@ -8,6 +8,40 @@ from scipy.ndimage import binary_dilation, minimum_filter
 MAX_DEPTH_METERS = 20.0
 
 
+def read_rgb_in_hypersim(
+            rgb_path: str,
+            exposure_value = 0.0
+        ) -> np.ndarray:
+    with h5py.File(rgb_path, 'r') as f:
+        rgb_hdr = np.array(f["dataset"], dtype=np.float32)
+
+    print(np.isnan(rgb_hdr).sum())
+    rgb_hdr = np.nan_to_num( # missing/infinity instance is handled
+        rgb_hdr, 
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0
+    )
+
+    # brightness adjustment: I = I * 2^(EV)
+    # +1 exposure value doubles the light, -1 exposure value halves the light
+    rgb_hdr = rgb_hdr * (2.0 ** exposure_value)
+
+    # Standard sRGB Gamma Correction: Linear (High Dynamic Range) -> Low Dynamic Range
+    # The function (Opto-Electronic Transfer Function) is the official linear-to-sRGB
+    # (standard RGB) conversion standardized by Hewlett-Packard and Microsoft.
+    # x <= 0.0031308 ? 12.92 * x : 1.055 * (x ** (1 / 2.4)) - 0.055
+    rgb_ldr = np.where(
+        rgb_hdr <= 0.0031308,
+        12.92 * rgb_hdr,
+        1.055 * np.power(rgb_hdr, 1.0 / 2.4) - 0.055
+    )
+    rgb_8bit = np.clip(rgb_ldr * 255.0, 0, 255).astype(np.uint8)
+
+    print(f"rgb: {rgb_8bit.shape}, min: {rgb_8bit.min()}, max: {rgb_8bit.max()}")
+    return rgb_8bit
+
+
 def read_depth_in_hypersim(
             depth_path: str
         ) -> np.ndarray:
@@ -35,14 +69,6 @@ def read_instance_in_hypersim(
     with h5py.File(instance_path, 'r') as f:
         instance = np.array(f["dataset"], dtype=np.int32)
 
-    # print(np.isnan(instance).sum())
-    # instance = np.nan_to_num( # missing/infinity instance is handled
-    #     instance, 
-    #     nan=-1.0,
-    #     posinf=-1.0,
-    #     neginf=-1.0
-    # )
-
     print(f"instance: {instance.shape}, min: {instance.min()}, max: {instance.max()}")
     return instance
 
@@ -62,52 +88,33 @@ def np_arr_to_img(
 
 
 def plot_np_arr(
-            np_arr: np.ndarray,
+            np_arr_list: list,
             file_name: str
         ):
+    fig, axes = plt.subplots(1, len(np_arr_list), figsize=(6 * len(np_arr_list), 10))
 
-    plt.imshow(np_arr, cmap="gray")
+    if len(np_arr_list) > 1:
+        for index, np_arr in enumerate(np_arr_list):
+            axes[index].imshow(np_arr)
+            # axes[index].imshow(np_arr, cmap="gray")
+    else :
+        axes.imshow(np_arr_list[0])
+        # axes.imshow(np_arr_list[0], cmap="gray")
+    
     plt.savefig(f"{file_name}.pdf", format="pdf", bbox_inches="tight")
     plt.clf()
     
     return
 
-def plot_img(
-            depth_img: Image, 
-            instance_img: Image, 
-            instance_img_unoccluded: Image, 
-            file_name: str
-        ):
-    fig, axes = plt.subplots(1, 3, figsize=(10, 5))
-    # axes[0].imshow(depth_img)
-    # axes[1].imshow(instance_img)
-    axes[0].imshow(depth_img, cmap='gray')
-    axes[1].imshow(instance_img, cmap='gray')
-    axes[2].imshow(instance_img_unoccluded, cmap='gray')
-    # plt.tight_layout()
-    plt.savefig(f"{file_name}.pdf", format="pdf", bbox_inches="tight")
-    # plt.show()
-    plt.clf()
-    
-    return
 
-
-def get_unoccluded_instances(
+def get_unoccluded_instance_mask(
             depth_map: np.ndarray,
             instance_mask: np.ndarray,
-            bg_id: int = -1
+            bg_id = -1,
+            small_obj_threshold = 0.001, # ratio to object vs whole image in pixel
+            epsilon_depth = 0.001, # tolerance of one millimeter in depth
+            threshold_boundary = 0.95 # amount of boundary that should be in front
         ) -> np.ndarray:
-    """
-    Strictly filters unoccluded instances for perfect synthetic datasets (like Hypersim).
-    
-    Args:
-        depth_map (np.ndarray): 2D array of exact depth values (smaller = closer).
-        instance_mask (np.ndarray): 2D array of instance labels.
-        bg_id (int): ID representing the background/invalid class.
-        
-    Returns:
-        np.ndarray: A new instance mask containing ONLY unoccluded objects.
-    """
     unoccluded_mask = np.full_like(instance_mask, bg_id)
     
     object_ids = np.unique(instance_mask)
@@ -118,54 +125,73 @@ def get_unoccluded_instances(
     structure = np.ones((3, 3), dtype=bool)
     
     for obj_id in object_ids:
+        # Get each object
         obj_binary = (instance_mask == obj_id)
-        plot_np_arr(obj_binary, "co_test")
-        break
+
+        # Get rid of small objects
+        if np.sum(obj_binary) < obj_binary.size * small_obj_threshold:
+            # print(f"{obj_id}: {np.sum(obj_binary)} / {obj_binary.size}")
+            continue
         
-        # # 1. Get the exact 1-pixel surrounding halo
-        # dilated_mask = binary_dilation(obj_binary, structure=structure)
-        # surrounding_mask = dilated_mask ^ obj_binary
+        # Get the exact 1-pixel surrounding the object
+        dilated_mask = binary_dilation(obj_binary, structure=structure)
+        surrounding_mask = dilated_mask ^ obj_binary
         
-        # # If the object fills the frame or has no surroundings, it's unoccluded
-        # if not np.any(surrounding_mask):
-        #     unoccluded_mask[obj_binary] = obj_id
-        #     continue
+        # If the object fills the frame or has no surroundings, don't include it
+        if not np.any(surrounding_mask):
+            continue
             
-        # # 2. Isolate the object's depths (set everything else to infinity)
-        # obj_depths = np.full_like(depth_map, np.inf)
-        # obj_depths[obj_binary] = depth_map[obj_binary]
+        # Isolate the object's depths (set everything else to infinity)
+        obj_depths = np.full_like(depth_map, np.inf)
+        obj_depths[obj_binary] = depth_map[obj_binary]
+        # obj_depths[surrounding_mask] = depth_map[surrounding_mask]
         
-        # # 3. Expand the object's depth outward by 1 pixel.
-        # # This assigns each pixel in the halo the exact depth of the closest object edge.
-        # expanded_obj_depths = minimum_filter(obj_depths, footprint=structure)
+        # Expand the object's depth outward by 1 pixel
+        expanded_obj_depths = minimum_filter(obj_depths, footprint=structure)
         
-        # # 4. Extract depths strictly at the halo
-        # surround_depth = depth_map[surrounding_mask]
-        # adjacent_obj_depth = expanded_obj_depths[surrounding_mask]
+        # Extract depths for object and its surrounding
+        surround_depth = depth_map[surrounding_mask]
+        adjacent_obj_depth = expanded_obj_depths[surrounding_mask]
         
-        # # 5. Perfect Data Check: ALL surrounding pixels must be further or equal 
-        # # to the adjacent object pixel. (No noise thresholds needed).
-        # if np.all(surround_depth >= adjacent_obj_depth):
-        #     unoccluded_mask[obj_binary] = obj_id
+        # ALL surrounding pixels must be further or equal to the adjacent object pixel
+        valid_surrounding_pixels = surround_depth + epsilon_depth >= adjacent_obj_depth
+        if np.mean(valid_surrounding_pixels) > threshold_boundary:
+            unoccluded_mask[obj_binary] = obj_id
 
     print(f"unoccluded instance: {np.unique(unoccluded_mask)}")
     return unoccluded_mask
+
+
+def visualize_instances(
+            rgb_image: np.ndarray,
+            instance_mask: np.ndarray,
+            bg_id = -1
+        ) -> np.ndarray:
+    instance_image = np.zeros_like(rgb_image)
+    foreground_mask = (instance_mask != bg_id)
+    instance_image[foreground_mask] = rgb_image[foreground_mask]
     
+    return instance_image
+
 
 if __name__ == "__main__":
+    rgb_path = "/workspace/minhas/dataset/hypersim/unzips/" \
+            "ai_001_003/images/scene_cam_00_final_hdf5/frame.0000.color.hdf5"
     depth_path = "/workspace/minhas/dataset/hypersim/unzips/" \
-            "ai_001_001/images/scene_cam_00_geometry_hdf5/frame.0000.depth_meters.hdf5"
+            "ai_001_003/images/scene_cam_00_geometry_hdf5/frame.0000.depth_meters.hdf5"
     instance_path = "/workspace/minhas/dataset/hypersim/unzips/" \
-            "ai_001_001/images/scene_cam_00_geometry_hdf5/frame.0000.semantic_instance.hdf5"
+            "ai_001_003/images/scene_cam_00_geometry_hdf5/frame.0000.semantic_instance.hdf5"
 
+    exposure_value = 0.0 # 1.0, -1.0
+    rgb_img = read_rgb_in_hypersim(rgb_path, exposure_value)
     depth_map = read_depth_in_hypersim(depth_path)
     instance_mask = read_instance_in_hypersim(instance_path)
 
-    depth_img = np_arr_to_img(depth_map)
-    instance_img = np_arr_to_img(instance_mask)
+    # depth_img = np_arr_to_img(depth_map)
+    # instance_img = np_arr_to_img(instance_mask)
 
-    instance_mask_unoccluded = get_unoccluded_instances(depth_map, instance_mask)
-    instance_img_unoccluded = np_arr_to_img(instance_mask_unoccluded)
+    unoccluded_instance_mask = get_unoccluded_instance_mask(depth_map, instance_mask)
+    # unoccluded_instance_img = np_arr_to_img(unoccluded_instance_mask)
 
-    plot_img(depth_img, instance_img, instance_img_unoccluded, "depth_instance_preview")
-    
+    instance_img = visualize_instances(rgb_img, unoccluded_instance_mask)
+    plot_np_arr([depth_map, instance_mask, unoccluded_instance_mask, instance_img], "depth_instance_preview")
