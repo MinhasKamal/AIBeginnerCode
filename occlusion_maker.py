@@ -11,7 +11,7 @@ def read_rgb_in_hypersim(
     with h5py.File(rgb_path, 'r') as f:
         rgb_hdr = np.array(f["dataset"], dtype=np.float32)
 
-    print(f"NAN count: {np.isnan(rgb_hdr).sum()}")
+    print(f"rgb NAN count: {np.isnan(rgb_hdr).sum()}")
     rgb_hdr = np.nan_to_num( # missing/infinity instance is handled
         rgb_hdr, 
         nan=0.0,
@@ -58,7 +58,7 @@ def extract_rgb(
     instance_image[foreground_mask] = rgb_image[foreground_mask]
     
     return instance_image
-    
+
 
 def crop_out_mask(
             instance_mask: np.ndarray
@@ -125,22 +125,25 @@ def plot_np_arr(
 
 if __name__ == "__main__":
     rgb_path = "/workspace/minhas/dataset/hypersim/unzips/" \
-            "ai_001_003/images/scene_cam_00_final_hdf5/frame.0000.color.hdf5"
+            "ai_001_002/images/scene_cam_00_final_hdf5/frame.0000.color.hdf5"
     instance_path = "/workspace/minhas/dataset/hypersim/unzips/" \
-            "ai_001_003/images/scene_cam_00_geometry_hdf5/frame.0000.semantic_instance.hdf5"
+            "ai_001_002/images/scene_cam_00_geometry_hdf5/frame.0000.semantic_instance.hdf5"
 
     exposure_value = 0.0 # 1.0, -1.0
     rgb_img = read_rgb_in_hypersim(rgb_path, exposure_value)
     instance_mask = read_instance_in_hypersim(instance_path)
 
     instance_ids = np.unique(instance_mask)
-    instance_mask_target = (instance_mask == instance_ids[2])
-    instance_mask_occluder = (instance_mask == instance_ids[3])
+    instance_mask_target = (instance_mask == instance_ids[1])
+    instance_mask_occluder = (instance_mask == instance_ids[2])
 
     rgb_target = extract_rgb(rgb_img, instance_mask_target)
     instance_mask_occluder_crop = crop_out_mask(instance_mask_occluder)
 
     shifted_occluder = shift_mask_randomly(instance_mask_occluder_crop, rgb_target)
     
-    masked_obj = extract_rgb(rgb_target, np.logical_not(shifted_occluder))
-    plot_np_arr([rgb_target, instance_mask_occluder_crop, shifted_occluder, masked_obj], "occluded_mask")
+    rgb_occluded = extract_rgb(rgb_target, np.logical_not(shifted_occluder))
+    plot_np_arr([rgb_target, instance_mask_occluder_crop, shifted_occluder, rgb_occluded], "occluded_mask")
+
+    occlusion_ratio = 1 - np.count_nonzero(rgb_occluded) / np.count_nonzero(rgb_target)
+    print(occlusion_ratio)

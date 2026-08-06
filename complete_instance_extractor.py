@@ -162,7 +162,7 @@ def get_unoccluded_instance_mask(
     return unoccluded_mask
 
 
-def visualize_instances(
+def extract_instance_rgb(
             rgb_image: np.ndarray,
             instance_mask: np.ndarray,
             bg_id = -1
@@ -193,5 +193,5 @@ if __name__ == "__main__":
     unoccluded_instance_mask = get_unoccluded_instance_mask(depth_map, instance_mask)
     # unoccluded_instance_img = np_arr_to_img(unoccluded_instance_mask)
 
-    instance_img = visualize_instances(rgb_img, unoccluded_instance_mask)
-    plot_np_arr([depth_map, instance_mask, unoccluded_instance_mask, instance_img], "depth_instance_preview")
+    instance_img = extract_instance_rgb(rgb_img, unoccluded_instance_mask)
+    plot_np_arr([depth_map, instance_mask, unoccluded_instance_mask, instance_img], "depth_instance_rgb_preview")
