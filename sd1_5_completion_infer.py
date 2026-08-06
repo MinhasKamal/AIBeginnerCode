@@ -11,14 +11,13 @@ from transformers import CLIPTokenizer
 from transformers import CLIPTextModel
 
 
-UNET_PATH = "depth_sd1-5_2"
+UNET_PATH = "completion_sd1-5_0"
 IMAGE_SIZE = 512
-INFERENCE_STEPS = 200 # 25
-GUIDANCE_SCALE = 3.0 # 2.5
-# IMAGE_PATH = "/workspace/minhas/dataset/test_depth/rgb/image_0001.png"
-# IMAGE_PATH = "img.jpg"
-IMAGE_PATH = "/workspace/minhas/dataset/test/3.jpg"
-DEPTH_PATH = "sd1_5_depth_pred.png"
+INFERENCE_STEPS = 40
+GUIDANCE_SCALE = 2.5
+# IMAGE_PATH = "/workspace/minhas/dataset/test/3.jpg"
+IMAGE_PATH = "compla1.png"
+COMPLETION_PATH = "sd1_5_completion_pred.png"
 
 
 def get_device() -> str:
@@ -28,15 +27,13 @@ def get_device() -> str:
 
 
 def get_pretrained_components(
-        device: str
+            device: str
         ) -> tuple[AutoencoderKL, UNet2DConditionModel, PNDMScheduler, CLIPTokenizer, CLIPTextModel]:
 
     vae_path = "vae_sd1-5_AutoencoderKL"
     vae = AutoencoderKL.from_pretrained(vae_path).to(device)
     
-    # unet_path = "unet_sd1-5_UNet2DConditionModel"
     unet_path = UNET_PATH
-    # unet_path = "depth_sd1-5_4"
     print(f"unet_path: {unet_path}")
     unet = UNet2DConditionModel.from_pretrained(unet_path).to(device)
     
@@ -52,23 +49,10 @@ def get_pretrained_components(
     return vae, unet, scheduler, tokenizer, text_encoder
 
 
-def get_zero_text_embedding(
-            batch_size: int,
-            embedding_len: int,
-            device: str
-        ) -> torch.Tensor:
-    maxCLIPTokenCount = 77
-    text_embedding_shape = (batch_size, maxCLIPTokenCount, embedding_len)
-    text_embedding = torch.zeros(text_embedding_shape, device=device)
-
-    print(f"embedding shape: {text_embedding.shape}")
-    return text_embedding
-
-
 def get_text_embedding(
-        tokenizer: CLIPTokenizer,
-        text_encoder: CLIPTextModel,
-        text: str
+            tokenizer: CLIPTokenizer,
+            text_encoder: CLIPTextModel,
+            text: str
         ) -> torch.Tensor:
     tokens = tokenizer(
         [text],
@@ -89,11 +73,11 @@ def get_text_embedding(
 
 
 def get_image_tensor(
-        device: str
+            device: str
         ) -> torch.Tensor:
     ## Prepare the Input RGB Image
     print(f"image_path: {IMAGE_PATH}")
-    rgb_img = Image.open(IMAGE_PATH).convert("RGB")
+    rgb_img = Image.open(IMAGE_PATH).convert("RGB") # if RGB-A, then background is made black
     rgb_tensor = TF.to_tensor(rgb_img) # (H, W, Ch) -> (Ch, H, W) & scale to [0.0, 1.0]
     rgb_tensor = (rgb_tensor * 2 - 1.0) # [0.0, 1.0] -> [-1.0, 1.0]
 
@@ -103,53 +87,54 @@ def get_image_tensor(
     rgb_tensor = F.interpolate(
         rgb_tensor.unsqueeze(0), 
         size=target_size,
-        mode='nearest',
-        # mode='bilinear', 
-        # align_corners=False
+        # mode='nearest',
+        mode='bilinear', 
+        align_corners=False
     ).squeeze(0)
 
     rgb_tensor = rgb_tensor.unsqueeze(0).to(device)
     
     return rgb_tensor
 
-    
+
 def save_image_tensor(
-        depth_output: torch.Tensor,
+            rgb_tensor: torch.Tensor,
+            completion_path: str
         ):
     # Shift pixel values from [-1.0, 1.0] back to [0.0, 1.0]
-    depth_output = (depth_output / 2 + 0.5).clamp(0, 1)
+    rgb_tensor = (rgb_tensor / 2 + 0.5).clamp(0, 1)
     
     # Convert tensor to a PIL Image
-    depth_output = depth_output.squeeze().cpu().permute(1, 2, 0).numpy()
-    depth_output = (depth_output * 255).astype(np.uint8)
+    rgb_tensor = rgb_tensor.squeeze().cpu().permute(1, 2, 0).numpy()
+    rgb_tensor = (rgb_tensor * 255).astype(np.uint8)
     
-    depth_image = Image.fromarray(depth_output)
+    rgb_image = Image.fromarray(rgb_tensor)
     
-    print(f"depth_path: {DEPTH_PATH}")
-    depth_image.save(DEPTH_PATH)
+    print(f"completion path: {completion_path}")
+    rgb_image.save(completion_path)
     return
 
 
 def infer(
-        vae: AutoencoderKL,
-        unet: UNet2DConditionModel,
-        scheduler: PNDMScheduler,
-        prompt_embeds: torch.Tensor,
-        rgb_tensor: torch.Tensor,
+            vae: AutoencoderKL,
+            unet: UNet2DConditionModel,
+            scheduler: PNDMScheduler,
+            prompt_embeds: torch.Tensor,
+            occluded_tensor: torch.Tensor,
         ) -> torch.Tensor:
 
     with torch.no_grad():
-        # Encode RGB into latents (4 channels)
-        rgb_latents = vae.encode(rgb_tensor).latent_dist.mode() * vae.config.scaling_factor
+        # Encode occluded img into latents (4 channels)
+        occluded_latents = vae.encode(occluded_tensor).latent_dist.mode() * vae.config.scaling_factor
         
-        # Initialize pure random noise for the depth map (4 channels)
-        # This must be the exact same shape as the RGB latents
-        depth_latents = torch.randn_like(rgb_latents)
+        # Initialize pure random noise for the unoccluded img (4 channels)
+        # This must be the exact same shape as the occluded latents
+        unoccluded_latents = torch.randn_like(occluded_latents)
         
         for t in scheduler.timesteps:
-            # Concatenate RGB latents and noisy depth latents along the channel dimension
+            # Concatenate occluded latents and noisy unoccluded latents along the channel dimension
             # Shape becomes: [1, 8, 64, 64]
-            unet_input = torch.cat([rgb_latents, depth_latents], dim=1)
+            unet_input = torch.cat([occluded_latents, unoccluded_latents], dim=1)
             
             # Predict the noise residual
             noise_pred = unet(
@@ -159,15 +144,15 @@ def infer(
             ).sample
             
             # Step the scheduler: removes a fraction of the predicted noise 
-            # to produce the slightly cleaner depth latent for the next timestep
-            depth_latents = scheduler.step(noise_pred, t, depth_latents).prev_sample
+            # to produce the slightly cleaner unoccluded latent for the next timestep
+            unoccluded_latents = scheduler.step(noise_pred, t, unoccluded_latents).prev_sample
     
         ## 5. Decode Latents Back to Pixels
         # Un-scale the latents before decoding
-        depth_latents = depth_latents / vae.config.scaling_factor
-        depth_output = vae.decode(depth_latents).sample
+        unoccluded_latents = unoccluded_latents / vae.config.scaling_factor
+        unoccluded_output = vae.decode(unoccluded_latents).sample
 
-    return depth_output
+    return unoccluded_output
 
 
 def infer_classifier_free(
@@ -175,28 +160,28 @@ def infer_classifier_free(
         unet: UNet2DConditionModel,
         scheduler: PNDMScheduler,
         prompt_embeds: torch.Tensor,
-        rgb_tensor: torch.Tensor,
+        occluded_tensor: torch.Tensor,
         guidance_scale: float = GUIDANCE_SCALE,
         ) -> torch.Tensor:
     print("Running classifier free...")
-    blank_tensor = torch.zeros_like(rgb_tensor)
-    
+    blank_tensor = torch.zeros_like(occluded_tensor)
+
     with torch.no_grad():
-        # Encode RGB into latents (4 channels)
-        rgb_latents = vae.encode(rgb_tensor).latent_dist.mode() * vae.config.scaling_factor
+        # Encode occluded img into latents (4 channels)
+        occluded_latents = vae.encode(occluded_tensor).latent_dist.mode() * vae.config.scaling_factor
         blank_latents = vae.encode(blank_tensor).latent_dist.mode() * vae.config.scaling_factor
         
-        # Initialize pure random noise for the depth map (4 channels)
-        # This must be the exact same shape as the RGB latents
-        depth_latents = torch.randn_like(rgb_latents)
+        # Initialize pure random noise for the unoccluded img (4 channels)
+        # This must be the exact same shape as the occluded latents
+        unoccluded_latents = torch.randn_like(occluded_latents)
         prompt_embeds = torch.cat([prompt_embeds, prompt_embeds], dim=0)
         
         for t in scheduler.timesteps:
-            # Concatenate RGB latents and noisy depth latents along the channel dimension
+            # Concatenate occluded latents and noisy unoccluded latents along the channel dimension
             # Shape becomes: [1, 8, 64, 64]
-            rgb_input = torch.cat([rgb_latents, depth_latents], dim=1)
-            blank_input = torch.cat([blank_latents, depth_latents], dim=1)
-            unet_input = torch.cat([blank_input, rgb_input], dim=0)
+            occluded_input = torch.cat([occluded_latents, unoccluded_latents], dim=1)
+            blank_input = torch.cat([blank_latents, unoccluded_latents], dim=1)
+            unet_input = torch.cat([blank_input, occluded_input], dim=0)
             
             # Predict the noise residual
             noise_pred = unet(
@@ -210,19 +195,19 @@ def infer_classifier_free(
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
             
             # Step the scheduler: removes a fraction of the predicted noise 
-            # to produce the slightly cleaner depth latent for the next timestep
-            depth_latents = scheduler.step(noise_pred, t, depth_latents).prev_sample
+            # to produce the slightly cleaner unoccluded latent for the next timestep
+            unoccluded_latents = scheduler.step(noise_pred, t, unoccluded_latents).prev_sample
     
         ## 5. Decode Latents Back to Pixels
         # Un-scale the latents before decoding
-        depth_latents = depth_latents / vae.config.scaling_factor
-        depth_output = vae.decode(depth_latents).sample
+        unoccluded_latents = unoccluded_latents / vae.config.scaling_factor
+        unoccluded_tensor = vae.decode(unoccluded_latents).sample
 
-    return depth_output
+    return unoccluded_tensor
 
-    
+
 if __name__ == "__main__":
-    print("Started...")
+    print("Inferring...")
     
     device = get_device()
     
@@ -238,14 +223,14 @@ if __name__ == "__main__":
     
     # Initialize an empty text embedding
     prompt_embeds = get_text_embedding(tokenizer, text_encoder, "")
-    # prompt_embeds = get_zero_text_embedding(1, unet.config.cross_attention_dim, device)
     
-    rgb_tensor = get_image_tensor(device)
+    occluded_tensor = get_image_tensor(device)
+    save_image_tensor(occluded_tensor, COMPLETION_PATH+"in.png")
     
-    # depth_output = infer(vae, unet, scheduler, prompt_embeds, rgb_tensor)
-    depth_output = infer_classifier_free(vae, unet, scheduler, prompt_embeds, rgb_tensor)
+    unoccluded_tensor = infer(vae, unet, scheduler, prompt_embeds, occluded_tensor)
+    # unoccluded_tensor = infer_classifier_free(vae, unet, scheduler, prompt_embeds, occluded_tensor)
     
-    save_image_tensor(depth_output)
+    save_image_tensor(unoccluded_tensor, COMPLETION_PATH)
     
     print("Inference complete!")
 

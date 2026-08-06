@@ -673,10 +673,8 @@ def run_trainer(
 
 
 if __name__ == "__main__":
-    print("Process Started...")
+    print("Training...")
     
     rgb_depth_instance_filepaths = list_rgb_depth_instance_in_hypersim(DATASET_ROOT)
     dataset = RGBCompletionDataset(rgb_depth_instance_filepaths, SD1_5_IMAGE_SIZE)
     run_trainer(dataset, EPOCHS, BATCH_SIZE, LEARNING_RATE, OUT_MODEL_PATH)
-
-    print("Process Finished!")

@@ -33,7 +33,7 @@ unet_path = "unet_sd1-5_UNet2DConditionModel"
 scheduler_path = "scheduler_sd1-5_PNDMScheduler"
 tokenizer_path = "tokenizer_sd1-5_CLIPTokenizer"
 text_encoder_path = "text_encoder_sd1-5_CLIPTextModel"
-OUT_MODEL_PATH = "depth_sd1-5_2"
+OUT_MODEL_PATH = "depth_sd1-5_3"
 
 EPOCHS = 5
 BATCH_SIZE = 32
@@ -49,7 +49,7 @@ DATA_DOWN_SAMPLE_CNT = -1
 PLT_DATA_SKIP = 100
 
 UNET_LAYER1_WEIGHT_DIST_FOR_DEPTH = 0.5
-CONDITIONAL_DROPOUT_FOR_CLASSIFIER_FREE_GUIDANCE = 0.15
+CONDITIONAL_DROPOUT_FOR_CLASSIFIER_FREE_GUIDANCE = 0.2
 
 
 def list_rgb_depth_pairs_in_hypersim(
@@ -132,6 +132,9 @@ def read_depth_in_hypersim(
     depth_tensor = depth_tensor.repeat(3, 1, 1) # 3 channels for the VAE: [1, H, W] -> [3, H, W]
     # print(depth_tensor.shape)
     return depth_tensor
+
+
+#####################################################################################################
 
 
 class RGBDepthDataset(Dataset):
