@@ -27,7 +27,7 @@ scheduler_path = "scheduler_sd1-5_PNDMScheduler"
 tokenizer_path = "tokenizer_sd1-5_CLIPTokenizer"
 text_encoder_path = "text_encoder_sd1-5_CLIPTextModel"
 
-OUT_MODEL_PATH = "completion_sd1-5_0"
+OUT_MODEL_PATH = "completion_sd1-5_2"
 
 EPOCHS = 3
 BATCH_SIZE = 32
@@ -36,7 +36,7 @@ LEARNING_RATE = 1e-5
 DATASET_ROOT = "/workspace/minhas/dataset/hypersim/unzips/"
 SD1_5_IMAGE_SIZE = 512
 DATA_LOADER_WORKERS = 2
-DATA_DOWN_SAMPLE_CNT = 10_000 #-1
+DATA_DOWN_SAMPLE_CNT = -1 #10_000 #-1
 
 PLT_DATA_SKIP = 100
 

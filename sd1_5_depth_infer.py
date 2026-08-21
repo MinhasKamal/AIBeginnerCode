@@ -9,16 +9,19 @@ from diffusers import UNet2DConditionModel
 from diffusers import PNDMScheduler
 from transformers import CLIPTokenizer
 from transformers import CLIPTextModel
+import cv2
 
 
-UNET_PATH = "depth_sd1-5_2"
+UNET_PATH = "depth_sd1-5_3"
 IMAGE_SIZE = 512
-INFERENCE_STEPS = 200 # 25
-GUIDANCE_SCALE = 3.0 # 2.5
+# INFERENCE_STEPS = 200 # 25
+# GUIDANCE_SCALE = 3.0 # 2.5
+INFERENCE_STEPS_LIST = [15, 20, 25, 30, 40, 60, 100, 150, 250, 500, 990]
+GUIDANCE_SCALE_LIST = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.5, 7.0, 10.0]
 # IMAGE_PATH = "/workspace/minhas/dataset/test_depth/rgb/image_0001.png"
-# IMAGE_PATH = "img.jpg"
-IMAGE_PATH = "/workspace/minhas/dataset/test/3.jpg"
-DEPTH_PATH = "sd1_5_depth_pred.png"
+# IMAGE_PATH = "/workspace/minhas/dataset/test/3.jpg"
+IMAGE_PATH = "rgb05.png"
+# DEPTH_PATH = "sd1_5_depth_pred.png"
 
 
 def get_device() -> str:
@@ -113,20 +116,42 @@ def get_image_tensor(
     return rgb_tensor
 
     
-def save_image_tensor(
+def save_image_tensor_colormap(
         depth_output: torch.Tensor,
+        depth_path: str,
         ):
     # Shift pixel values from [-1.0, 1.0] back to [0.0, 1.0]
     depth_output = (depth_output / 2 + 0.5).clamp(0, 1)
     
-    # Convert tensor to a PIL Image
+    # remove batch dimension -> bring to cpu -> Ch,H,W > H,W,Ch -> to numpy
+    depth_output = depth_output.squeeze()[0].detach()
+    depth_output = depth_output.cpu().numpy()
+    depth_output = (depth_output * 255).astype(np.uint8)
+
+    inverted_depth_output = 255 - depth_output
+
+    rgb_depth = cv2.applyColorMap(inverted_depth_output, cv2.COLORMAP_JET) # VIRIDIS, PLASMA
+    
+    print(f"depth_path: {depth_path}")
+    cv2.imwrite(depth_path, rgb_depth)
+    return
+
+
+def save_image_tensor(
+        depth_output: torch.Tensor,
+        depth_path: str,
+        ):
+    # Shift pixel values from [-1.0, 1.0] back to [0.0, 1.0]
+    depth_output = (depth_output / 2 + 0.5).clamp(0, 1)
+    
+    # remove batch dimension -> bring to cpu -> Ch,H,W > H,W,Ch -> to numpy
     depth_output = depth_output.squeeze().cpu().permute(1, 2, 0).numpy()
     depth_output = (depth_output * 255).astype(np.uint8)
     
     depth_image = Image.fromarray(depth_output)
     
-    print(f"depth_path: {DEPTH_PATH}")
-    depth_image.save(DEPTH_PATH)
+    print(f"depth_path: {depth_path}")
+    depth_image.save(depth_path)
     return
 
 
@@ -176,7 +201,7 @@ def infer_classifier_free(
         scheduler: PNDMScheduler,
         prompt_embeds: torch.Tensor,
         rgb_tensor: torch.Tensor,
-        guidance_scale: float = GUIDANCE_SCALE,
+        guidance_scale: float,
         ) -> torch.Tensor:
     print("Running classifier free...")
     blank_tensor = torch.zeros_like(rgb_tensor)
@@ -233,19 +258,24 @@ if __name__ == "__main__":
     unet.eval()
     text_encoder.eval()
     
-    ## The reverse diffusion (denoising) loop steps
-    scheduler.set_timesteps(INFERENCE_STEPS)
     
     # Initialize an empty text embedding
     prompt_embeds = get_text_embedding(tokenizer, text_encoder, "")
     # prompt_embeds = get_zero_text_embedding(1, unet.config.cross_attention_dim, device)
     
     rgb_tensor = get_image_tensor(device)
+    save_image_tensor(rgb_tensor, f"{UNET_PATH}/{IMAGE_PATH}_in.png")
     
-    # depth_output = infer(vae, unet, scheduler, prompt_embeds, rgb_tensor)
-    depth_output = infer_classifier_free(vae, unet, scheduler, prompt_embeds, rgb_tensor)
-    
-    save_image_tensor(depth_output)
+    # scheduler.set_timesteps(INFERENCE_STEPS)
+    # # depth_output = infer(vae, unet, scheduler, prompt_embeds, rgb_tensor)
+    # depth_output = infer_classifier_free(vae, unet, scheduler, prompt_embeds, rgb_tensor, GUIDANCE_SCALE)
+    # save_image_tensor(depth_output, DEPTH_PATH)
+
+    for inference_steps in INFERENCE_STEPS_LIST:
+        for guidance_scale in GUIDANCE_SCALE_LIST:
+            scheduler.set_timesteps(inference_steps)
+            depth_output = infer_classifier_free(vae, unet, scheduler, prompt_embeds, rgb_tensor, guidance_scale)
+            save_image_tensor_colormap(depth_output, f"{UNET_PATH}/{IMAGE_PATH}_{inference_steps}_{guidance_scale}.png")
     
     print("Inference complete!")
 

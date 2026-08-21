@@ -11,13 +11,15 @@ from transformers import CLIPTokenizer
 from transformers import CLIPTextModel
 
 
-UNET_PATH = "completion_sd1-5_0"
+UNET_PATH = "completion_sd1-5_res_1"
 IMAGE_SIZE = 512
-INFERENCE_STEPS = 40
-GUIDANCE_SCALE = 2.5
+# INFERENCE_STEPS = 40
+INFERENCE_STEPS_LIST = [15, 20, 25, 30, 40, 60, 100, 150, 250, 500, 990]
+# GUIDANCE_SCALE = 1.5
+GUIDANCE_SCALE_LIST = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.5, 7.0, 10.0]
 # IMAGE_PATH = "/workspace/minhas/dataset/test/3.jpg"
-IMAGE_PATH = "compla1.png"
-COMPLETION_PATH = "sd1_5_completion_pred.png"
+IMAGE_PATH = "/workspace/minhas/dataset/test/compl_a1.png"
+COMPLETION_PATH = UNET_PATH + "/" + "img"
 
 
 def get_device() -> str:
@@ -73,11 +75,12 @@ def get_text_embedding(
 
 
 def get_image_tensor(
-            device: str
+            image_path: str,
+            device: str,
         ) -> torch.Tensor:
     ## Prepare the Input RGB Image
-    print(f"image_path: {IMAGE_PATH}")
-    rgb_img = Image.open(IMAGE_PATH).convert("RGB") # if RGB-A, then background is made black
+    print(f"image_path: {image_path}")
+    rgb_img = Image.open(image_path).convert("RGB") # if RGB-A, then background is made black
     rgb_tensor = TF.to_tensor(rgb_img) # (H, W, Ch) -> (Ch, H, W) & scale to [0.0, 1.0]
     rgb_tensor = (rgb_tensor * 2 - 1.0) # [0.0, 1.0] -> [-1.0, 1.0]
 
@@ -161,7 +164,7 @@ def infer_classifier_free(
         scheduler: PNDMScheduler,
         prompt_embeds: torch.Tensor,
         occluded_tensor: torch.Tensor,
-        guidance_scale: float = GUIDANCE_SCALE,
+        guidance_scale: float,
         ) -> torch.Tensor:
     print("Running classifier free...")
     blank_tensor = torch.zeros_like(occluded_tensor)
@@ -218,19 +221,23 @@ if __name__ == "__main__":
     unet.eval()
     text_encoder.eval()
     
-    ## The reverse diffusion (denoising) loop steps
-    scheduler.set_timesteps(INFERENCE_STEPS)
-    
     # Initialize an empty text embedding
     prompt_embeds = get_text_embedding(tokenizer, text_encoder, "")
     
-    occluded_tensor = get_image_tensor(device)
-    save_image_tensor(occluded_tensor, COMPLETION_PATH+"in.png")
+    occluded_tensor = get_image_tensor(IMAGE_PATH, device)
+    save_image_tensor(occluded_tensor, COMPLETION_PATH+"_in.png")
+
+    # scheduler.set_timesteps(INFERENCE_STEPS)
+    # # unoccluded_tensor = infer(vae, unet, scheduler, prompt_embeds, occluded_tensor)
+    # unoccluded_tensor = infer_classifier_free(vae, unet, scheduler, prompt_embeds, occluded_tensor, GUIDANCE_SCALE)
+    # save_image_tensor(unoccluded_tensor, COMPLETION_PATH+".png")
+
+    for steps in INFERENCE_STEPS_LIST:
+        for scale in GUIDANCE_SCALE_LIST:
+            scheduler.set_timesteps(steps)
+            unoccluded_tensor = infer_classifier_free(vae, unet, scheduler, prompt_embeds, occluded_tensor, scale)
+            save_image_tensor(unoccluded_tensor, COMPLETION_PATH+f"_{steps}_{scale}.png")
     
-    unoccluded_tensor = infer(vae, unet, scheduler, prompt_embeds, occluded_tensor)
-    # unoccluded_tensor = infer_classifier_free(vae, unet, scheduler, prompt_embeds, occluded_tensor)
-    
-    save_image_tensor(unoccluded_tensor, COMPLETION_PATH)
     
     print("Inference complete!")
 
