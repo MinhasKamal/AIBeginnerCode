@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 
-UNET_PATH = "depth_sd_xl1_0"
+UNET_PATH = "depth_sd_xl1_1"
 IMAGE_NAME = "prof_home.jpg"
 SD_XL1_IMAGE_SIZE = 1024
 INFERENCE_STEPS_LIST = [15, 20, 25, 30, 40, 60, 100, 150, 250, 500, 990]
@@ -287,7 +287,7 @@ if __name__ == "__main__":
         for guidance_scale in GUIDANCE_SCALE_LIST:
             scheduler.set_timesteps(inference_steps)
             depth_output = infer_classifier_free(rgb_tensor, guidance_scale, vae, unet, scheduler, text_embedding_batch, added_cond_kwargs)
-            save_image_tensor_colormap(depth_output, f"{UNET_PATH}/{IMAGE_NAME}_{inference_steps}_{guidance_scale}.png")
+            save_image_tensor(depth_output, f"{UNET_PATH}/{IMAGE_NAME}_{inference_steps}_{guidance_scale}.png")
 
     print("# Inference complete!")
 

@@ -2,8 +2,9 @@ import torch
 import numpy as np
 
 
-EPOCHS = 5
-BATCH_SIZE = 2 # 32 # TODO: accumulate gradient for out-of-memory
+EPOCHS = 10
+BATCH_SIZE = 1 # for 4 GPUs, effective batch size becomes 2*4 = 8 
+GRADIENT_ACCUMULATION_STEPS = 8 # effective batch size = BATCH_SIZE * GPUs * GRADIENT_ACCUMULATION_STEPS
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-2
 
@@ -11,7 +12,7 @@ SD_XL1_IMAGE_SIZE = 1024
 IMG_AUG_CROP_LEN = SD_XL1_IMAGE_SIZE // 10
 IMG_AUG_NOISE_STD = 0.02
 
-OUT_MODEL_PATH = "depth_sd_xl1_0"
+OUT_MODEL_PATH = "depth_sd_xl1_1"
 
 
 ####--**--####
@@ -60,7 +61,7 @@ import h5py
 
 
 dataset_root = "/workspace/minhas/dataset/hypersim/unzips/"
-data_down_sample_count = -1 # 10_000 ## TEST ONLY!!!
+data_down_sample_count = -1 ## TEST ONLY!!!
 def list_rgb_depth_instance_in_hypersim(
         ) -> list:
     print("# Listing rgb-depth-instance...")
@@ -112,7 +113,7 @@ def list_rgb_depth_instance_in_hypersim(
                     continue
                     
                 grouped_filepaths.append((rgb_path, depth_path, instance_path))
-                break ## TEST ONLY!!!
+                # break ## TEST ONLY!!!
 
     if data_down_sample_count > 0: ## TEST ONLY!!!
         grouped_filepaths = random.sample(grouped_filepaths, data_down_sample_count)
@@ -187,6 +188,15 @@ def read_instance_mask_in_hypersim(
 
     # print(f"instance: {instance_mask.shape}, min: {instance_mask.min()}, max: {instance_mask.max()}")
     return instance_mask
+
+
+def scale_depth_map_meter(
+            depth_map_meter: np.ndarray
+        ) -> np.ndarray:
+    # depth_map_scaled = (depth_map_meter / max_depth_meter) * 2.0 - 1.0
+    depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * np.power(x, 0.9))
+
+    return depth_map_scaled
 
 
 ####--**--####
@@ -292,17 +302,17 @@ from transformers import CLIPTextModel
 from transformers import CLIPTextModelWithProjection
 
 
-def get_devices(
-        ) -> list[str]:
-    if not torch.cuda.is_available():
-        print("GPU not available, using CPU!")
-        return ["cpu"]
+# def get_devices(
+#         ) -> list[str]:
+#     if not torch.cuda.is_available():
+#         print("GPU not available, using CPU!")
+#         return ["cpu"]
     
-    num_gpus = torch.cuda.device_count()
-    devices = [f"cuda:{i}" for i in range(num_gpus)]
+#     num_gpus = torch.cuda.device_count()
+#     devices = [f"cuda:{i}" for i in range(num_gpus)]
     
-    print(f"Found {num_gpus} CUDA device(s)")
-    return devices
+#     print(f"Found {num_gpus} CUDA device(s)")
+#     return devices
 
 
 def multiply_unet_input_capacity(
@@ -436,6 +446,8 @@ import json
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from diffusers import DDPMScheduler
+from accelerate import Accelerator
+# from accelerate.utils import InitProcessGroupKwargs
 
 
 plt_data_skip = 100
@@ -472,7 +484,8 @@ def run_trainer(
             batch_size: int,
             learning_rate: float,
             weight_decay: float,
-            out_model_path: str
+            out_model_path: str,
+            accelerator: Accelerator
         ) -> None:
     dataloader = DataLoader(
         dataset,
@@ -483,21 +496,29 @@ def run_trainer(
         pin_memory=True
     )
     
-    devices = get_devices()
+    device = accelerator.device
 
     vae, unet, scheduler, tokenizer_1, text_encoder_1, tokenizer_2, text_encoder_2 = get_pretrained_components()
-    vae = vae.to(devices[0])
+    
+    vae = vae.to(device)
     vae.requires_grad_(False) # Freeze model weights and never compute gradients for them
     vae.eval() # Layer behavior adjustment, like- disable dropout layers & freeze batch normalization
-    unet = unet.to(devices[0])
+    
+    unet = unet.to(device)
     unet.requires_grad_(True)
+    # unet.enable_gradient_checkpointing() # reduces some memory usage but increases time
+    
     scheduler = DDPMScheduler.from_config(scheduler.config)
-    text_encoder_1 = text_encoder_1.to(devices[1])
-    text_encoder_2 = text_encoder_2.to(devices[1])
+    
+    text_encoder_1 = text_encoder_1.to(device)
+    text_encoder_1.requires_grad_(False)
+    text_encoder_1.eval()
+    
+    text_encoder_2 = text_encoder_2.to(device)
+    text_encoder_2.requires_grad_(False)
+    text_encoder_2.eval()
 
     text_embedding, text_embedding_pooled = get_text_embedding_2("", tokenizer_1, text_encoder_1, tokenizer_2, text_encoder_2)
-    text_embedding_batch = text_embedding.repeat(batch_size, 1, 1).to(devices[0])
-    text_embedding_pooled_batch = text_embedding_pooled.repeat(batch_size, 1).to(devices[0])
     
     # SDXL was trained on random center crops, causing its UNet to learn that
     # objects are often sliced off. By passing (0, 0) during inference to force
@@ -505,89 +526,144 @@ def run_trainer(
     # SDXL included lower-resolution images scaled up. By conditioning on original 
     # size, the model learns the difference between upscaled blurriness and native
     # high-frequency detail.
-    # TODO: we should put real input image resolution here
-    time_ids = torch.tensor(
+    # TODO: I think- we should put the real input image resolution here
+    time_id = torch.tensor(
         [[SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE, 0, 0, SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE]],
         # orig height, orig width, crop top, crop left, trgt height, trgt width
-        device=devices[0],
+        # for hypersim dataset- 768, 1024, 0, 0, 1024, 1024
+        device=device,
         dtype=text_embedding.dtype
-    ).repeat(batch_size, 1)
-    added_cond_kwargs = {
-        "text_embeds": text_embedding_pooled_batch,
-        "time_ids": time_ids
-    }
+    )
 
     optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    loss_log = {
-        'epoch': [],
-        'train_mse': [],
-    }
+    if accelerator.is_main_process:
+        loss_log = {
+            'epoch': [],
+            'train_mse': [],
+        }
+
+        print("# Training...")
+
+    unet, optimizer, dataloader = accelerator.prepare(unet, optimizer, dataloader)
     
-    print("# Training...")
     for epoch in range(epochs):
-        
-        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
+        unet.train()
+
+        progress_bar = tqdm(
+            dataloader,
+            desc=f"Epoch {epoch+1}/{epochs}",
+            disable=not accelerator.is_main_process # only show progress bar on the main process
+        )
+
         for rgb_imgs, depth_imgs in progress_bar:
-            rgb_latent_batch = encode_image_batch_to_latents(vae, rgb_imgs.to(devices[0]))
-            depth_latent_batch = encode_image_batch_to_latents(vae, depth_imgs.to(devices[0]))
-            
-            # Sample random timestep for each image in the batch
-            timestep_batch = torch.randint(
-                low=0,
-                high=scheduler.config.num_train_timesteps, 
-                size=(batch_size,),
-                device=devices[0]
-            ).long()
-            # Sample Gaussian noise
-            noise = torch.randn_like(depth_latent_batch)
-            # The timestep_batch dictates how much of that noise is blended into the clean latents
-            noisy_depth_latent_batch = scheduler.add_noise(depth_latent_batch, noise, timestep_batch)
+            with accelerator.accumulate(unet):
 
-            input_latent = torch.cat([rgb_latent_batch, noisy_depth_latent_batch], dim=1)
-            noise_pred = unet(
-                sample=input_latent,
-                timestep=timestep_batch,
-                encoder_hidden_states=text_embedding_batch,
-                added_cond_kwargs=added_cond_kwargs
-            ).sample
+                sub_batch_size = rgb_imgs.shape[0]
 
-            # Though we added scaled noise (depending on timesteps) to the image, we calculate
-            # the loss against the original, unscaled noise. Because if we tried to predict the
-            # scaled noise, the target values would be huge at step 999 and tiny at step 1. Deep
-            # neural networks struggle to learn this. Whether the U-Net is looking at heavy noise
-            # or light noise, the statistical properties of its target remain exactly the same.
-            # This makes the loss gradient smooth and predictable.
-            loss = F.mse_loss(noise_pred, noise)
-            loss.backward()
-            # (Optional but highly recommended) Clip gradients to prevent random spikes
-            # torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
-            optimizer.step()
+                rgb_latent_batch = encode_image_batch_to_latents(vae, rgb_imgs)
+                depth_latent_batch = encode_image_batch_to_latents(vae, depth_imgs)
 
-            # Clear the old gradients before calculating new ones
-            optimizer.zero_grad()
-            # optimizer.zero_grad(set_to_none=True)
-            
-            loss_log['epoch'].append(epoch+1)
-            loss_log['train_mse'].append(loss.item())
-            progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
+                # Sample random timestep for each image in the batch
+                timestep_batch = torch.randint(
+                    low=0,
+                    high=scheduler.config.num_train_timesteps, 
+                    size=(sub_batch_size,),
+                    device=device
+                ).long()
+                # Sample Gaussian noise
+                noise = torch.randn_like(depth_latent_batch)
+                # The timestep_batch dictates how much of that noise is blended into the clean latents
+                noisy_depth_latent_batch = scheduler.add_noise(depth_latent_batch, noise, timestep_batch)
 
-        unet.save_pretrained(out_model_path)
-        produceLogAndGraph(loss_log, out_model_path)
-        print(f"Successfully saved model to: {out_model_path}")
+                input_latent = torch.cat([rgb_latent_batch, noisy_depth_latent_batch], dim=1)
+
+                text_embedding_batch = text_embedding.repeat(sub_batch_size, 1, 1)
+                text_embedding_pooled_batch = text_embedding_pooled.repeat(sub_batch_size, 1)
+                time_id_batch = time_id.repeat(sub_batch_size, 1)
+                added_cond_kwargs = {
+                    "text_embeds": text_embedding_pooled_batch,
+                    "time_ids": time_id_batch
+                }
+
+                noise_pred = unet(
+                    sample=input_latent,
+                    timestep=timestep_batch,
+                    encoder_hidden_states=text_embedding_batch,
+                    added_cond_kwargs=added_cond_kwargs
+                ).sample
+
+                # Though we added scaled noise (depending on timesteps) to the image, we calculate
+                # the loss against the original, unscaled noise. Because if we tried to predict the
+                # scaled noise, the target values would be huge at step 999 and tiny at step 1. Deep
+                # neural networks struggle to learn this. Whether the U-Net is looking at heavy noise
+                # or light noise, the statistical properties of its target remain exactly the same.
+                # This makes the loss gradient smooth and predictable.
+                loss = F.mse_loss(noise_pred, noise)
+
+                # loss.backward()
+                accelerator.backward(loss)
+                # (Optional but highly recommended) Clip gradients to prevent random spikes
+                # torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                # Clear the old gradients before calculating new ones
+                optimizer.zero_grad()
+                # optimizer.zero_grad(set_to_none=True)  # may reduce some memory usage
     
-    return 
+                if accelerator.is_main_process:
+                    loss_log['epoch'].append(epoch+1)
+                    loss_log['train_mse'].append(loss.item())
+                    progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
+
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            unwrapped_unet = accelerator.unwrap_model(unet)
+            unwrapped_unet.save_pretrained(out_model_path)
+            produceLogAndGraph(loss_log, out_model_path)
+            print(f"Successfully saved model to: {out_model_path}")
+
+    return
 
     
 
 if __name__ == "__main__":
-    print("# Started!")
+    # accelerator = Accelerator()
+    accelerator = Accelerator(gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS)
+    accelerator.print("# Started!")
     
     rgb_depth_instance_filepaths = list_rgb_depth_instance_in_hypersim()
     dataset = RGBDepthDataset(rgb_depth_instance_filepaths, SD_XL1_IMAGE_SIZE, IMG_AUG_CROP_LEN, IMG_AUG_NOISE_STD)
     # plot_tensor_list(dataset.__getitem__(3), "sd_xl1_depth_trainer_test")
-    run_trainer(dataset, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY, OUT_MODEL_PATH)
+    run_trainer(dataset, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY, OUT_MODEL_PATH, accelerator)
 
-    print("# Training finished!")
+    accelerator.end_training()
+    accelerator.print("# Training finished!")
 
 
+"""
+accelerate config
+-------------------------------------------------------------------------------------------------------
+Which type of machine are you using?
+multi-GPU
+How many different machines will you use (use more than 1 for multi-node training)? [1]: 1
+Should distributed operations be checked while running for errors? This can avoid timeout issues but will be slower[yes/NO]:
+Do you wish to optimize your script with torch dynamo?[yes/NO]:
+Do you want to use DeepSpeed? [yes/NO]:
+Do you want to use FullyShardedDataParallel? [yes/NO]:
+Do you want to use Megatron-LM ? [yes/NO]:
+How many GPU(s) should be used for distributed training? [1]:4
+What GPU(s) (by id) should be used for training on this machine as a comma-separated list? [all]:
+Would you like to enable numa efficiency? (Currently only supported on NVIDIA hardware). [yes/NO]:
+----------------------------------------------------------------------------------------------------------
+
+accelerate launch sd_xl1_depth_trainer.py
+
+accelerate launch \
+    --num_machines 1 \
+    --num_processes 1 \
+    --mixed_precision no \
+    sd_xl1_depth_trainer.py
+
+ctrl+z -> kill -9 %1
+"""
