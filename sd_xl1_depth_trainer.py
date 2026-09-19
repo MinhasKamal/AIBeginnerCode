@@ -3,16 +3,16 @@ import numpy as np
 
 
 EPOCHS = 10
-BATCH_SIZE = 1 # for 4 GPUs, effective batch size becomes 2*4 = 8 
-GRADIENT_ACCUMULATION_STEPS = 8 # effective batch size = BATCH_SIZE * GPUs * GRADIENT_ACCUMULATION_STEPS
-LEARNING_RATE = 1e-5
+BATCH_SIZE = 4 # for 4 GPUs, effective batch size becomes 4*4 = 16
+GRADIENT_ACCUMULATION_STEPS = 2 # effective batch size = BATCH_SIZE * GPUs * GRADIENT_ACCUMULATION_STEPS
+LEARNING_RATE = 5e-6
 WEIGHT_DECAY = 1e-2
 
 SD_XL1_IMAGE_SIZE = 1024
 IMG_AUG_CROP_LEN = SD_XL1_IMAGE_SIZE // 10
 IMG_AUG_NOISE_STD = 0.02
 
-OUT_MODEL_PATH = "depth_sd_xl1_1"
+OUT_MODEL_PATH = "depth_sd_xl1_2"
 
 
 ####--**--####
@@ -158,7 +158,7 @@ def read_rgb_img_in_hypersim(
     return rgb_8bit
 
 
-max_depth_meter = 10.0 #1000.0
+max_depth_meter = 1_000.0
 def read_depth_map_in_hypersim(
             depth_map_path: str
         ) -> np.ndarray:
@@ -194,9 +194,20 @@ def scale_depth_map_meter(
             depth_map_meter: np.ndarray
         ) -> np.ndarray:
     # depth_map_scaled = (depth_map_meter / max_depth_meter) * 2.0 - 1.0
-    depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * np.power(x, 0.9))
+    # depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * depth_map_meter)
+    depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * np.power(depth_map_meter, 0.9))
 
     return depth_map_scaled
+
+
+def unscale_depth_map_meter(
+            depth_map_scaled: np.ndarray
+        ) -> np.ndarray:
+    # depth_map_scaled = np.clip(depth_map_scaled, -0.999999, 0.999999)
+    inside_log = (1.0 - depth_map_scaled) / 2.0
+    depth_map_meter = np.power(-20.0 * np.log(inside_log), 1.0 / 0.9)
+
+    return depth_map_meter
 
 
 ####--**--####
@@ -241,9 +252,8 @@ class RGBDepthDataset(Dataset):
         rgb_tensor = ((rgb_tensor / 255.0) * 2.0) - 1.0 # scale to [-1.0, 1.0]
         
         depth_map_meter = read_depth_map_in_hypersim(depth_path)
-        depth_tensor = torch.from_numpy(depth_map_meter.astype(np.float32))
-        # TODO: convert to a smooth function
-        depth_tensor = (depth_tensor / max_depth_meter) * 2.0 - 1.0 # Normalization to [-1.0, 1.0]
+        depth_map_scaled = scale_depth_map_meter(depth_map_meter)
+        depth_tensor = torch.from_numpy(depth_map_scaled.astype(np.float32))
         depth_tensor = depth_tensor.repeat(3, 1, 1) # 3 channels for the VAE: [1, H, W] -> [3, H, W]
 
         target_size = (self.image_size + self.crop_len, self.image_size + self.crop_len)
@@ -506,7 +516,7 @@ def run_trainer(
     
     unet = unet.to(device)
     unet.requires_grad_(True)
-    # unet.enable_gradient_checkpointing() # reduces some memory usage but increases time
+    unet.enable_gradient_checkpointing() # reduces some memory usage but increases time
     
     scheduler = DDPMScheduler.from_config(scheduler.config)
     

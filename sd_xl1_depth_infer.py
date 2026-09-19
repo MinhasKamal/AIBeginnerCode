@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 
-UNET_PATH = "depth_sd_xl1_1"
+UNET_PATH = "depth_sd_xl1_2"
 IMAGE_NAME = "prof_home.jpg"
 SD_XL1_IMAGE_SIZE = 1024
 INFERENCE_STEPS_LIST = [15, 20, 25, 30, 40, 60, 100, 150, 250, 500, 990]
@@ -208,16 +208,16 @@ def infer_classifier_free(
         # Initialize pure random noise for the depth map
         depth_latents = torch.randn_like(rgb_latents)
         # Scale the initial latents by the scheduler's required initial noise scale
-        # depth_latents = depth_latents * scheduler.init_noise_sigma
+        depth_latents = depth_latents * scheduler.init_noise_sigma
         
         for t in scheduler.timesteps:
-            # Concatenate RGB latents and noisy depth latents along the channel dimension
-            rgb_input = torch.cat([rgb_latents, depth_latents], dim=1)
-            blank_input = torch.cat([blank_latents, depth_latents], dim=1)
-            unet_input = torch.cat([blank_input, rgb_input], dim=0)
-
             # Scale model input based on current timestep constraints (specific to certain schedulers)
-            unet_input = scheduler.scale_model_input(unet_input, t)
+            scaled_depth_latents = scheduler.scale_model_input(depth_latents, t)
+            
+            # Concatenate RGB latents and noisy depth latents along the channel dimension
+            rgb_input = torch.cat([rgb_latents, scaled_depth_latents], dim=1)
+            blank_input = torch.cat([blank_latents, scaled_depth_latents], dim=1)
+            unet_input = torch.cat([blank_input, rgb_input], dim=0)
             
             # Predict the noise residual
             noise_pred = unet(
