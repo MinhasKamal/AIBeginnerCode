@@ -173,6 +173,150 @@ def transform_image_pair(rgb_path, depth_path):
     return
 
 
+####--**--####
+
+
+import os
+import glob
+import random
+import h5py
+
+
+HYPERSIM_DATASET_ROOT = "/workspace/minhas/dataset/hypersim/unzips/"
+HYPERSIM_DATA_DOWN_SAMPLE_COUNT = -1 ## TEST ONLY!!!
+def list_rgb_depth_instance_in_hypersim(
+        ) -> list:
+    print("# Listing rgb-depth-instance...")
+    grouped_filepaths = []
+
+    # Get all scene directories (e.g., ai_001_001, ai_002_001)
+    scene_dirs_pattern = os.path.join(HYPERSIM_DATASET_ROOT, "ai_*")
+    scene_dirs = glob.glob(scene_dirs_pattern)
+    
+    for scene_dir in sorted(scene_dirs):
+        scene_dir = os.path.join(scene_dir, "images")
+        if not os.path.exists(scene_dir):
+            print(f"{scene_dir} does not exist!")
+            continue
+            
+        # Find all final preview camera directories in this scene
+        cam_preview_dirs_pattern = os.path.join(scene_dir, "scene_cam_*_final_hdf5")
+        cam_preview_dirs = glob.glob(cam_preview_dirs_pattern)
+
+        for rgb_cam_dir in cam_preview_dirs:
+            # Extract the camera identifier (e.g., 'cam_00') to find its geometry match
+            # depth_cam_dir = rgb_cam_dir[:-len("final_preview")] + "geometry_preview"
+            depth_cam_dir = rgb_cam_dir[:-len("final_hdf5")] + "geometry_hdf5"
+            
+            if not os.path.exists(depth_cam_dir):
+                print(f"{depth_cam_dir} does not exist!!")
+                continue
+                
+            # Find all RGB frames inside this camera folder
+            rgb_files_pattern = os.path.join(rgb_cam_dir, "frame.*.color.hdf5")
+            rgb_files = glob.glob(rgb_files_pattern)
+            
+            for rgb_path in rgb_files:
+                # Extract the exact frame number (e.g., '0000', '0001') from the filename
+                filename = os.path.basename(rgb_path)
+                frame_idx = filename.split(".")[1]
+                
+                # Construct the expected matching depth map path
+                # depth_path = os.path.join(depth_cam_dir, f"frame.{frame_idx}.depth_meters.png")
+                depth_path = os.path.join(depth_cam_dir, f"frame.{frame_idx}.depth_meters.hdf5")                
+                # Verify that the depth map physically exists before adding the pair
+                if not os.path.exists(depth_path):
+                    print(f"{depth_path} does not exist!!!")
+                    continue
+
+                instance_path = os.path.join(depth_cam_dir, f"frame.{frame_idx}.semantic_instance.hdf5")
+                if not os.path.exists(instance_path):
+                    print(f"{instance_path} does not exist!!!")
+                    continue
+                    
+                grouped_filepaths.append((rgb_path, depth_path, instance_path))
+                # break ## TEST ONLY!!!
+
+    if HYPERSIM_DATA_DOWN_SAMPLE_COUNT > 0: ## TEST ONLY!!!
+        grouped_filepaths = random.sample(grouped_filepaths, HYPERSIM_DATA_DOWN_SAMPLE_COUNT)
+
+    print(f"Total sample count: {len(grouped_filepaths)}")
+    return grouped_filepaths
+
+
+def read_rgb_in_hypersim(
+            rgb_path: str
+        ) -> np.ndarray:
+    with h5py.File(rgb_path, 'r') as f:
+        rgb_hdr = np.array(f["dataset"], dtype=np.float32)
+
+    # print(f"rgb NAN count: {np.isnan(rgb_hdr).sum()}")
+    rgb_hdr = np.nan_to_num( # missing/infinity instance is handled
+        rgb_hdr, 
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0
+    )
+
+    # randomly set an exposure value
+    exposure_value = random.uniform(-1.0, 1.0)
+
+    # brightness adjustment: I = I * 2^(EV)
+    # +1 exposure value doubles the light, -1 exposure value halves the light
+    rgb_hdr = rgb_hdr * (2.0 ** exposure_value)
+
+    # Standard sRGB Gamma Correction: Linear (High Dynamic Range) -> Low Dynamic Range
+    # The function (Opto-Electronic Transfer Function) is the official linear-to-sRGB
+    # (standard RGB) conversion standardized by Hewlett-Packard and Microsoft.
+    # x <= 0.0031308 ? 12.92 * x : 1.055 * (x ** (1 / 2.4)) - 0.055
+    rgb_ldr = np.where(
+        rgb_hdr <= 0.0031308,
+        12.92 * rgb_hdr,
+        1.055 * np.power(rgb_hdr, 1.0 / 2.4) - 0.055
+    )
+    rgb_8bit = np.clip(rgb_ldr * 255.0, 0, 255).astype(np.uint8)
+
+    rgb_8bit = np.transpose(rgb_8bit, (2, 0, 1)) # (H, W, Ch) -> (Ch, H, W)
+
+    # print(f"rgb: {rgb_8bit.shape}, min: {rgb_8bit.min()}, max: {rgb_8bit.max()}")
+    return rgb_8bit
+
+
+HYPERSIM_MAX_DEPTH_METER = 1_000.0
+def read_depth_in_hypersim(
+            depth_map_path: str
+        ) -> np.ndarray:
+    with h5py.File(depth_map_path, 'r') as f:
+        depth_map_meter = np.array(f["dataset"], dtype=np.float32)
+
+    # print(np.isnan(depth).sum())
+    depth_map_meter = np.nan_to_num( # missing/infinity depth is handled
+        depth_map_meter,
+        nan=HYPERSIM_MAX_DEPTH_METER,
+        posinf=HYPERSIM_MAX_DEPTH_METER,
+        neginf=0.0
+    )
+    # bound outliers: lower than 0.0 are elevated to 0.0, and values exceeding
+    # HYPERSIM_MAX_DEPTH_METER are truncated to that maximum
+    depth_map_meter = np.clip(depth_map_meter, a_min=0.0, a_max=HYPERSIM_MAX_DEPTH_METER)
+    
+    # print(f"depth: {depth_map_meter.shape}, min: {depth_map_meter.min()}, max: {depth_map_meter.max()}")
+    return depth_map_meter
+
+
+def read_instance_mask_in_hypersim(
+            instance_mask_path: str
+        ) -> np.ndarray:
+    with h5py.File(instance_mask_path, 'r') as f:
+        instance_mask = np.array(f["dataset"], dtype=np.int32)
+
+    # print(f"instance: {instance_mask.shape}, min: {instance_mask.min()}, max: {instance_mask.max()}")
+    return instance_mask
+
+
+####--**--####
+
+
 if __name__ == "__main__":
     dataset_root = "/workspace/minhas/dataset/hypersim/unzips/"
     paired_filepaths = list_rgb_depth_pairs_in_hypersim(dataset_root)
