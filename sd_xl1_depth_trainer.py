@@ -3,7 +3,7 @@ import numpy as np
 
 
 EPOCHS = 10
-BATCH_SIZE = 4 # for 4 GPUs, effective batch size becomes 4*4 = 16
+BATCH_SIZE = 4 # for 4 GPUs, effective batch size becomes BATCH_SIZE * 4
 GRADIENT_ACCUMULATION_STEPS = 2 # effective batch size = BATCH_SIZE * GPUs * GRADIENT_ACCUMULATION_STEPS
 LEARNING_RATE = 5e-6
 WEIGHT_DECAY = 1e-2
@@ -11,8 +11,9 @@ WEIGHT_DECAY = 1e-2
 SD_XL1_IMAGE_SIZE = 1024
 IMG_AUG_CROP_LEN = SD_XL1_IMAGE_SIZE // 10
 IMG_AUG_NOISE_STD = 0.02
+CONDITIONAL_DROPOUT_FOR_CLASSIFIER_FREE_GUIDANCE = 0.2
 
-OUT_MODEL_PATH = "depth_sd_xl1_2"
+OUT_MODEL_PATH = "depth_sd_xl1_5"
 
 
 ####--**--####
@@ -47,6 +48,7 @@ def plot_np_arr_list(
     
     plt.savefig(f"{file_name}.pdf", format="pdf", bbox_inches="tight")
     plt.clf()
+    print(f"Plot is saved in {file_name}")
     
     return
 
@@ -60,15 +62,15 @@ import random
 import h5py
 
 
-dataset_root = "/workspace/minhas/dataset/hypersim/unzips/"
-data_down_sample_count = -1 ## TEST ONLY!!!
-def list_rgb_depth_instance_in_hypersim(
+HYPERSIM_DATASET_ROOT = "/workspace/minhas/dataset/hypersim/unzips/"
+HYPERSIM_DATA_DOWN_SAMPLE_COUNT = -1 ## TEST ONLY!!!
+def list_rgb_depth_in_hypersim(
         ) -> list:
-    print("# Listing rgb-depth-instance...")
+    print("# Listing rgb-depth in Hypersim...")
     grouped_filepaths = []
 
     # Get all scene directories (e.g., ai_001_001, ai_002_001)
-    scene_dirs_pattern = os.path.join(dataset_root, "ai_*")
+    scene_dirs_pattern = os.path.join(HYPERSIM_DATASET_ROOT, "ai_*")
     scene_dirs = glob.glob(scene_dirs_pattern)
     
     for scene_dir in sorted(scene_dirs):
@@ -106,25 +108,19 @@ def list_rgb_depth_instance_in_hypersim(
                 if not os.path.exists(depth_path):
                     print(f"{depth_path} does not exist!!!")
                     continue
-
-                instance_path = os.path.join(depth_cam_dir, f"frame.{frame_idx}.semantic_instance.hdf5")
-                if not os.path.exists(instance_path):
-                    print(f"{instance_path} does not exist!!!")
-                    continue
                     
-                grouped_filepaths.append((rgb_path, depth_path, instance_path))
+                grouped_filepaths.append((rgb_path, depth_path))
                 # break ## TEST ONLY!!!
 
-    if data_down_sample_count > 0: ## TEST ONLY!!!
-        grouped_filepaths = random.sample(grouped_filepaths, data_down_sample_count)
+    if HYPERSIM_DATA_DOWN_SAMPLE_COUNT > 0: ## TEST ONLY!!!
+        grouped_filepaths = random.sample(grouped_filepaths, HYPERSIM_DATA_DOWN_SAMPLE_COUNT)
 
     print(f"Total sample count: {len(grouped_filepaths)}")
     return grouped_filepaths
 
 
-def read_rgb_img_in_hypersim(
-            rgb_path: str,
-            exposure_value = 0.0
+def read_rgb_in_hypersim(
+            rgb_path: str
         ) -> np.ndarray:
     with h5py.File(rgb_path, 'r') as f:
         rgb_hdr = np.array(f["dataset"], dtype=np.float32)
@@ -136,6 +132,9 @@ def read_rgb_img_in_hypersim(
         posinf=0.0,
         neginf=0.0
     )
+
+    # randomly set an exposure value
+    exposure_value = random.uniform(-1.0, 1.0)
 
     # brightness adjustment: I = I * 2^(EV)
     # +1 exposure value doubles the light, -1 exposure value halves the light
@@ -158,8 +157,8 @@ def read_rgb_img_in_hypersim(
     return rgb_8bit
 
 
-max_depth_meter = 1_000.0
-def read_depth_map_in_hypersim(
+HYPERSIM_MAX_DEPTH_METER = 1_000.0
+def read_depth_in_hypersim(
             depth_map_path: str
         ) -> np.ndarray:
     with h5py.File(depth_map_path, 'r') as f:
@@ -168,32 +167,145 @@ def read_depth_map_in_hypersim(
     # print(np.isnan(depth).sum())
     depth_map_meter = np.nan_to_num( # missing/infinity depth is handled
         depth_map_meter,
-        nan=max_depth_meter,
-        posinf=max_depth_meter,
+        nan=HYPERSIM_MAX_DEPTH_METER,
+        posinf=HYPERSIM_MAX_DEPTH_METER,
         neginf=0.0
     )
     # bound outliers: lower than 0.0 are elevated to 0.0, and values exceeding
-    # MAX_DEPTH_METERS are truncated to that maximum
-    depth_map_meter = np.clip(depth_map_meter, a_min=0.0, a_max=max_depth_meter)
+    # HYPERSIM_MAX_DEPTH_METER are truncated to that maximum
+    depth_map_meter = np.clip(depth_map_meter, a_min=0.0, a_max=HYPERSIM_MAX_DEPTH_METER)
     
     # print(f"depth: {depth_map_meter.shape}, min: {depth_map_meter.min()}, max: {depth_map_meter.max()}")
     return depth_map_meter
 
 
-def read_instance_mask_in_hypersim(
-            instance_mask_path: str
-        ) -> np.ndarray:
-    with h5py.File(instance_mask_path, 'r') as f:
-        instance_mask = np.array(f["dataset"], dtype=np.int32)
+####--**--####
 
-    # print(f"instance: {instance_mask.shape}, min: {instance_mask.min()}, max: {instance_mask.max()}")
-    return instance_mask
+
+import os
+import glob
+import random
+import torch
+import torchvision.transforms.functional as TF
+from PIL import Image
+import numpy as np
+
+
+VKITTI_DATASET_ROOT = "/workspace/minhas/dataset/virtual_kitti/"
+VKITTI_DATA_DOWN_SAMPLE_COUNT = -1 ## TEST ONLY!!!
+def list_rgb_depth_in_vkitti(
+        ) -> list:
+    
+    print("# Listing rgb-depth in Virtual KITTI...")
+    grouped_filepaths = []
+    
+    # Get all scene directories (e.g., Scene01, Scene02, Scene06, etc.)
+    scene_dirs_pattern = os.path.join(VKITTI_DATASET_ROOT, "Scene*")
+    scene_dirs = glob.glob(scene_dirs_pattern)
+    
+    for scene_dir in sorted(scene_dirs):
+        if not os.path.isdir(scene_dir):
+            continue
+            
+        # vKITTI2 scenes have variation subfolders (e.g., 'clone', 'fog', 'morning', '15-deg-left')
+        variation_dirs = glob.glob(os.path.join(scene_dir, "*"))
+        
+        for variation_dir in sorted(variation_dirs):
+            if not os.path.isdir(variation_dir):
+                continue
+                
+            # Paths to rgb and depth frame directories
+            rgb_base_dir = os.path.join(variation_dir, "frames", "rgb")
+            depth_base_dir = os.path.join(variation_dir, "frames", "depth")
+            
+            if not os.path.exists(rgb_base_dir) or not os.path.exists(depth_base_dir):
+                continue
+                
+            # Iterate through cameras (e.g., Camera_0, Camera_1)
+            camera_dirs = glob.glob(os.path.join(rgb_base_dir, "Camera_*"))
+            
+            for rgb_cam_dir in sorted(camera_dirs):
+                cam_name = os.path.basename(rgb_cam_dir) # e.g., 'Camera_0'
+                depth_cam_dir = os.path.join(depth_base_dir, cam_name)
+                
+                if not os.path.exists(depth_cam_dir):
+                    print(f"{depth_cam_dir} does not exist!!")
+                    continue
+                    
+                # Find all RGB frames inside this camera folder (vKITTI2 RGBs are usually .jpg)
+                rgb_files_pattern = os.path.join(rgb_cam_dir, "rgb_*.jpg")
+                rgb_files = glob.glob(rgb_files_pattern)
+                
+                # Fallback in case your specific download uses .png for RGB
+                # if not rgb_files:
+                #     rgb_files_pattern = os.path.join(rgb_cam_dir, "rgb_*.png")
+                #     rgb_files = glob.glob(rgb_files_pattern)
+                
+                for rgb_path in rgb_files:
+                    # Extract the exact frame number (e.g., '00000') from the filename 'rgb_00000.jpg'
+                    filename = os.path.basename(rgb_path)
+                    frame_idx = filename.split("_")[1].split(".")[0]
+                    
+                    # Construct the expected matching depth map path (vKITTI2 depths are 16-bit .png)
+                    depth_path = os.path.join(depth_cam_dir, f"depth_{frame_idx}.png")
+                    
+                    # Verify that the depth map physically exists before adding the pair
+                    if not os.path.exists(depth_path):
+                        print(f"{depth_path} does not exist!!!")
+                        continue
+                        
+                    grouped_filepaths.append((rgb_path, depth_path))
+                    # break ## TEST ONLY!!!
+
+    if VKITTI_DATA_DOWN_SAMPLE_COUNT > 0: ## TEST ONLY!!!
+        grouped_filepaths = random.sample(grouped_filepaths, VKITTI_DATA_DOWN_SAMPLE_COUNT)
+        
+    print(f"Total sample count: {len(grouped_filepaths)}")
+    return grouped_filepaths
+
+
+def read_rgb_in_vkitti(
+        rgb_path: str
+    ) -> np.ndarray:
+    rgb_img = Image.open(rgb_path).convert("RGB")
+    rgb_8bit = np.array(rgb_img, dtype=np.uint8)
+    rgb_8bit = np.transpose(rgb_8bit, (2, 0, 1)) # (H, W, Ch) -> (Ch, H, W)
+    return rgb_8bit
+
+
+VKITTI_MAX_DEPTH_METERS: float = 1_000.0
+def read_depth_in_vkitti(
+            depth_path: str
+        ) -> np.ndarray:
+
+    depth_map_centimeter = np.array(Image.open(depth_path), dtype=np.float32)
+    depth_map_meter = depth_map_centimeter / 100.0
+    depth_map_meter = np.expand_dims(depth_map_meter, axis=0) # [H, W] -> [1, H, W]
+
+    # Map 0.0 (sky or invalid pixels) to max depth
+    depth_map_meter[depth_map_meter == 0.0] = VKITTI_MAX_DEPTH_METERS
+
+    depth_map_meter = np.nan_to_num( # missing or infinity depth is handled
+        depth_map_meter,
+        nan=VKITTI_MAX_DEPTH_METERS,
+        posinf=VKITTI_MAX_DEPTH_METERS,
+        neginf=0.0
+    )
+
+    # bound outliers: lower than 0.0 are elevated to 0.0, and values exceeding
+    # MAX_DEPTH_METERS are truncated to that maximum
+    depth_map_meter = np.clip(depth_map_meter, 0.0, VKITTI_MAX_DEPTH_METERS)
+
+    # print(depth_map_meter.shape)
+    return depth_map_meter
+
+
+####--**--####
 
 
 def scale_depth_map_meter(
             depth_map_meter: np.ndarray
         ) -> np.ndarray:
-    # depth_map_scaled = (depth_map_meter / max_depth_meter) * 2.0 - 1.0
     # depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * depth_map_meter)
     depth_map_scaled = 1.0 - 2 * np.exp(-0.05 * np.power(depth_map_meter, 0.9))
 
@@ -217,17 +329,22 @@ from torch.utils.data import Dataset
 import random
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
+from collections.abc import Callable
 
 
 class RGBDepthDataset(Dataset):
     def __init__(
                 self, 
-                rgb_depth_instance_filepaths: list,
+                rgb_depth_filepaths: list,
+                read_rgb: Callable[[str], np.ndarray],
+                read_depth: Callable[[str], np.ndarray],
                 image_size: int,
                 crop_len: int,
                 noise_std: float
             ) -> None:
-        self.rgb_depth_instance_filepaths = rgb_depth_instance_filepaths
+        self.rgb_depth_filepaths = rgb_depth_filepaths
+        self.read_rgb = read_rgb
+        self.read_depth = read_depth
         self.image_size = image_size
         self.crop_len = crop_len
         self.noise_std = noise_std
@@ -236,22 +353,19 @@ class RGBDepthDataset(Dataset):
     def __len__(
                 self
             ) -> int:
-        return len(self.rgb_depth_instance_filepaths)
+        return len(self.rgb_depth_filepaths)
 
     def __getitem__(
                 self,
                 idx: int
             ) -> tuple[torch.Tensor, torch.Tensor]:
-        rgb_path, depth_path, _ = self.rgb_depth_instance_filepaths[idx]
-
-        # randomly set an exposure value
-        exposure_value = random.uniform(-1.0, 1.0)
+        rgb_path, depth_path = self.rgb_depth_filepaths[idx]
         
-        rgb_8bit = read_rgb_img_in_hypersim(rgb_path, exposure_value)
+        rgb_8bit = self.read_rgb(rgb_path)
         rgb_tensor = torch.from_numpy(rgb_8bit.astype(np.float32))
         rgb_tensor = ((rgb_tensor / 255.0) * 2.0) - 1.0 # scale to [-1.0, 1.0]
         
-        depth_map_meter = read_depth_map_in_hypersim(depth_path)
+        depth_map_meter = self.read_depth(depth_path)
         depth_map_scaled = scale_depth_map_meter(depth_map_meter)
         depth_tensor = torch.from_numpy(depth_map_scaled.astype(np.float32))
         depth_tensor = depth_tensor.repeat(3, 1, 1) # 3 channels for the VAE: [1, H, W] -> [3, H, W]
@@ -292,8 +406,8 @@ class RGBDepthDataset(Dataset):
         rgb_tensor = torch.clamp(rgb_tensor, -1.0, 1.0)
 
         # Provide blank RGB image for context-free guidance
-        # if random.random() < CONDITIONAL_DROPOUT_FOR_CLASSIFIER_FREE_GUIDANCE:
-        #     rgb_tensor = torch.zeros_like(rgb_tensor)
+        if random.random() < CONDITIONAL_DROPOUT_FOR_CLASSIFIER_FREE_GUIDANCE:
+            rgb_tensor = torch.zeros_like(rgb_tensor)
         
         return rgb_tensor, depth_tensor
 
@@ -460,7 +574,7 @@ from accelerate import Accelerator
 # from accelerate.utils import InitProcessGroupKwargs
 
 
-plt_data_skip = 100
+PLT_DATA_SKIP = 100
 def produceLogAndGraph(
             loss_log: list,
             model_path : str
@@ -474,10 +588,10 @@ def produceLogAndGraph(
     plt.figure(figsize=(16, 6))
 
     plt.title("Training MSE")
-    plt.xlabel(f"Iterations (Every {plt_data_skip}th)")
+    plt.xlabel(f"Iterations (Every {PLT_DATA_SKIP}th)")
     plt.ylabel("MSE")
     plt.grid(True)
-    plt.plot(loss_log['train_mse'][::plt_data_skip], label='Train MSE')
+    plt.plot(loss_log['train_mse'][::PLT_DATA_SKIP], label='Train MSE')
     # plt.plot(loss_log['epoch'], loss_log['test_ssim'], label='Test MSE')
     plt.legend()
 
@@ -487,9 +601,11 @@ def produceLogAndGraph(
     plt.clf()
 
 
-data_loader_workers = 2 # Adjust based on CPU cores
+DATA_LOADER_WORKERS = 2 # Adjust based on CPU cores
 def run_trainer(
             dataset: Dataset,
+            orig_img_h: int,
+            orig_img_w: int,
             epochs: int,
             batch_size: int,
             learning_rate: float,
@@ -502,7 +618,7 @@ def run_trainer(
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=data_loader_workers,
+        num_workers=DATA_LOADER_WORKERS,
         pin_memory=True
     )
     
@@ -536,9 +652,9 @@ def run_trainer(
     # SDXL included lower-resolution images scaled up. By conditioning on original 
     # size, the model learns the difference between upscaled blurriness and native
     # high-frequency detail.
-    # TODO: I think- we should put the real input image resolution here
     time_id = torch.tensor(
-        [[SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE, 0, 0, SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE]],
+        # [[SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE, 0, 0, SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE]],
+        [[orig_img_h, orig_img_w, 0, 0, SD_XL1_IMAGE_SIZE, SD_XL1_IMAGE_SIZE]],
         # orig height, orig width, crop top, crop left, trgt height, trgt width
         # for hypersim dataset- 768, 1024, 0, 0, 1024, 1024
         device=device,
@@ -638,14 +754,22 @@ def run_trainer(
     
 
 if __name__ == "__main__":
-    # accelerator = Accelerator()
     accelerator = Accelerator(gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS)
     accelerator.print("# Started!")
     
-    rgb_depth_instance_filepaths = list_rgb_depth_instance_in_hypersim()
-    dataset = RGBDepthDataset(rgb_depth_instance_filepaths, SD_XL1_IMAGE_SIZE, IMG_AUG_CROP_LEN, IMG_AUG_NOISE_STD)
-    # plot_tensor_list(dataset.__getitem__(3), "sd_xl1_depth_trainer_test")
-    run_trainer(dataset, EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY, OUT_MODEL_PATH, accelerator)
+    # rgb_depth_filepaths = list_rgb_depth_in_hypersim()
+    # dataset = RGBDepthDataset(rgb_depth_filepaths, read_rgb_in_hypersim, 
+    #                           read_depth_in_hypersim, SD_XL1_IMAGE_SIZE, IMG_AUG_CROP_LEN, IMG_AUG_NOISE_STD)
+    # orig_img_h, orig_img_w = 768, 1024
+
+    rgb_depth_filepaths = list_rgb_depth_in_vkitti()
+    dataset = RGBDepthDataset(rgb_depth_filepaths, read_rgb_in_vkitti, 
+                              read_depth_in_vkitti, SD_XL1_IMAGE_SIZE, IMG_AUG_CROP_LEN, IMG_AUG_NOISE_STD)
+    orig_img_h, orig_img_w = 375, 1242
+    
+    if accelerator.is_main_process: plot_tensor_list(dataset.__getitem__(2), "sd_xl1_depth_trainer_test")
+    run_trainer(dataset, orig_img_h, orig_img_w, EPOCHS, BATCH_SIZE,
+                LEARNING_RATE, WEIGHT_DECAY, OUT_MODEL_PATH, accelerator)
 
     accelerator.end_training()
     accelerator.print("# Training finished!")
